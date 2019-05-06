@@ -1,11 +1,11 @@
 package pdh
 
 import (
-  "encoding/binary"
-  "io"
-  "time"
+	"encoding/binary"
+	"io"
+	"time"
 
-  "github.com/busoc/timutil"
+	"github.com/busoc/timutil"
 )
 
 const (
@@ -16,8 +16,8 @@ const (
 const BufferSize = 4096
 
 type Packet struct {
-  UMIHeader
-  Data []byte
+	UMIHeader
+	Data []byte
 }
 
 type Decoder struct {
@@ -41,22 +41,22 @@ func (d *Decoder) Decode(data bool) (p Packet, err error) {
 }
 
 func decodePacket(buffer []byte, data bool) (p Packet, err error) {
-  if len(buffer) < UMIHeaderLen {
-    err = io.ErrShortBuffer
-    return
-  }
-  if p.UMIHeader, err = decodeHeader(buffer); err != nil {
-    return
-  }
-  if data {
-    length := int(p.Len) + UMIHeaderLen
-    if length > len(buffer) {
-      err = io.ErrShortBuffer
-      return
-    }
-    copy(p.Data, buffer[UMIHeaderLen:])
-  }
-  return
+	if len(buffer) < UMIHeaderLen {
+		err = io.ErrShortBuffer
+		return
+	}
+	if p.UMIHeader, err = decodeHeader(buffer); err != nil {
+		return
+	}
+	if data {
+		length := int(p.Len) + UMIHeaderLen
+		if length > len(buffer) {
+			err = io.ErrShortBuffer
+			return
+		}
+		copy(p.Data, buffer[UMIHeaderLen:])
+	}
+	return
 }
 
 type UMIPacketState uint8

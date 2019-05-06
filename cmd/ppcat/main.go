@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/binary"
 	"io"
 	"log"
 	"os"
-	"sort"
 
-	"github.com/busoc/rt"
 	"github.com/busoc/pdh"
+	"github.com/busoc/rt"
 	"github.com/midbel/cli"
 	"github.com/midbel/linewriter"
 )
@@ -56,59 +54,70 @@ func main() {
 	}
 }
 
+func Line(csv bool) *linewriter.Writer {
+	var options []linewriter.Option
+	if csv {
+		options = append(options, linewriter.AsCSV(true))
+	} else {
+		options = []linewriter.Option{
+			linewriter.WithPadding([]byte(" ")),
+			linewriter.WithSeparator([]byte("|")),
+		}
+	}
+	return linewriter.NewWriter(1024, options...)
+}
+
 func runList(cmd *cli.Command, args []string) error {
 	csv := cmd.Flag.Bool("c", false, "csv format")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
-	d, err := Decode(cmd.Flag.Args())
+	mr, err := rt.Browse(cmd.Flag.Args(), true)
 	if err != nil {
 		return err
 	}
-	var options []func(*linewriter.Writer)
-	if *csv {
-		options = append(options, linewriter.AsCSV(false))
-	} else {
-		options = []func(*linewriter.Writer){
-			linewriter.WithPadding([]byte(" ")),
-			linewriter.WithSeparator([]byte("|")),
-		}
-	}
-	line := linewriter.NewWriter(1024, options...)
+	defer mr.Close()
+	d := pdh.NewDecoder(rt.NewReader(mr))
 
+	line := Line(*csv)
 	for {
-		p, err := d.Decode(false)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
+		switch p, err := d.Decode(false); err {
+		case nil:
+			line.AppendTime(p.Timestamp(), rt.TimeFormat, linewriter.AlignCenter)
+			line.AppendString(p.State.String(), 8, linewriter.AlignRight)
+			line.AppendBytes(p.Code[:], 0, linewriter.Hex)
+			line.AppendUint(uint64(p.Orbit), 8, linewriter.Hex|linewriter.WithZero)
+			line.AppendString(p.Type.String(), 12, linewriter.AlignRight)
+			line.AppendUint(uint64(p.Len), 8, linewriter.AlignRight)
+
+			io.Copy(os.Stdout, line)
+		case io.EOF:
+			return nil
+		default:
 			return err
 		}
-		dumpPacket(line, p)
 	}
 	return nil
 }
 
+type key struct {
+	Origin byte
+	Code   [pdh.UMICodeLen]byte
+}
+
 func runCount(cmd *cli.Command, args []string) error {
-	state := cmd.Flag.Bool("s", false, "count by state")
+	csv := cmd.Flag.Bool("c", false, "csv format")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
-	d, err := Decode(cmd.Flag.Args())
+	mr, err := rt.Browse(cmd.Flag.Args(), true)
 	if err != nil {
 		return err
 	}
-	headers := []string{
-		"UMI",
-		pdh.StateNoValue.String(),
-		pdh.StateSameValue.String(),
-		pdh.StateNewValue.String(),
-		pdh.StateLatestValue.String(),
-		pdh.StateErrorValue.String(),
-		"total",
-	}
-	stats := make(map[[pdh.UMICodeLen]byte][]int)
-	var codes [][pdh.UMICodeLen]byte
+	defer mr.Close()
+	d := pdh.NewDecoder(rt.NewReader(mr))
+
+	stats := make(map[key]rt.Coze)
 	for {
 		p, err := d.Decode(false)
 		if err != nil {
@@ -117,69 +126,53 @@ func runCount(cmd *cli.Command, args []string) error {
 			}
 			return err
 		}
-		if _, ok := stats[p.Code]; !ok {
-			codes = append(codes, p.Code)
-			stats[p.Code] = make([]int, len(headers)-2)
+		k := key{
+			Origin: p.Code[0],
+			Code:   p.Code,
 		}
-		stats[p.Code][int(p.State)]++
-	}
-	if len(stats) == 0 {
-		return nil
-	}
-	options := []func(*linewriter.Writer){
-		linewriter.WithPadding([]byte(" ")),
-		linewriter.WithSeparator([]byte("|")),
-	}
-	line := linewriter.NewWriter(1024, options...)
-	for i := 0; i < len(headers); i++ {
-		if !*state && !(i == 0 || i == len(headers)-1) {
-			continue
-		}
-		line.AppendString(headers[i], 12, linewriter.AlignRight)
-	}
-	os.Stdout.Write(append(line.Bytes(), '\n'))
-	line.Reset()
+		cz := stats[k]
+		cz.Count++
+		cz.Size += uint64(p.Len)
 
-	sort.Slice(codes, func(i, j int) bool {
-		s1, s2 := binary.BigEndian.Uint16(codes[i][:]), binary.BigEndian.Uint16(codes[j][:])
-		if s1 == s2 {
-			u1, u2 := binary.BigEndian.Uint32(codes[i][2:]), binary.BigEndian.Uint32(codes[j][2:])
-			return u1 < u2
+		cz.EndTime = p.Timestamp()
+		if cz.StartTime.IsZero() {
+			cz.StartTime = cz.EndTime
 		}
-		return s1 < s2
-	})
-	for i := 0; i < len(codes); i++ {
-		k := codes[i]
-		vs := stats[k]
-		line.AppendBytes(k[:], 12, linewriter.Hex)
-		var total int
-		for i := 0; i < len(vs); i++ {
-			total += vs[i]
-			if *state {
-				line.AppendInt(int64(vs[i]), 12, linewriter.AlignRight)
-			}
-		}
-		line.AppendInt(int64(total), 12, linewriter.AlignRight)
-		os.Stdout.Write(append(line.Bytes(), '\n'))
-		line.Reset()
+
+		stats[k] = cz
 	}
+	line := Line(*csv)
+	for k, cz := range stats {
+		line.AppendUint(uint64(k.Origin), 2, linewriter.Hex|linewriter.WithZero)
+		line.AppendBytes(k.Code[:], 12, linewriter.Hex)
+		line.AppendUint(cz.Count, 8, linewriter.AlignRight)
+		if *csv {
+			line.AppendUint(cz.Size, 8, linewriter.AlignRight)
+		} else {
+			line.AppendSize(int64(cz.Size), 8, linewriter.AlignRight)
+		}
+		line.AppendTime(cz.StartTime, rt.TimeFormat, linewriter.AlignRight)
+		line.AppendTime(cz.EndTime, rt.TimeFormat, linewriter.AlignRight)
+		io.Copy(os.Stdout, line)
+	}
+
 	return nil
 }
 
 func runDiff(cmd *cli.Command, args []string) error {
+	csv := cmd.Flag.Bool("c", false, "csv format")
 	duration := cmd.Flag.Duration("d", 0, "minimum duration between two packets")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
-	d, err := Decode(cmd.Flag.Args())
+	mr, err := rt.Browse(cmd.Flag.Args(), true)
 	if err != nil {
 		return err
 	}
-	options := []func(*linewriter.Writer){
-		linewriter.WithPadding([]byte(" ")),
-		linewriter.WithSeparator([]byte("|")),
-	}
-	line := linewriter.NewWriter(1024, options...)
+	defer mr.Close()
+	d := pdh.NewDecoder(rt.NewReader(mr))
+
+	line := Line(*csv)
 
 	stats := make(map[[pdh.UMICodeLen]byte]pdh.Packet)
 	for {
@@ -192,38 +185,16 @@ func runDiff(cmd *cli.Command, args []string) error {
 		}
 		if other, ok := stats[p.Code]; ok {
 			f, t := other.Timestamp(), p.Timestamp()
-			if delta := t.Sub(f); delta >= *duration {
+			if delta := t.Sub(f); *duration <= 0 || delta >= *duration {
 				line.AppendBytes(p.Code[:], 0, linewriter.Hex)
 				line.AppendTime(f, rt.TimeFormat, linewriter.AlignRight)
 				line.AppendTime(t, rt.TimeFormat, linewriter.AlignRight)
 				line.AppendDuration(delta, 16, linewriter.AlignLeft)
 
-				os.Stdout.Write(append(line.Bytes(), '\n'))
-				line.Reset()
+				io.Copy(os.Stdout, line)
 			}
 		}
 		stats[p.Code] = p
 	}
 	return nil
-}
-
-func Decode(files []string) (*pdh.Decoder, error) {
-	mr, err := rt.Browse(files, true)
-	if err != nil {
-		return nil, err
-	}
-	return pdh.NewDecoder(rt.NewReader(mr)), nil
-}
-
-func dumpPacket(line *linewriter.Writer, p pdh.Packet) {
-	defer line.Reset()
-
-	line.AppendTime(p.Timestamp(), rt.TimeFormat, linewriter.AlignCenter)
-	line.AppendString(p.State.String(), 8, linewriter.AlignRight)
-	line.AppendBytes(p.Code[:], 0, linewriter.Hex)
-	line.AppendUint(uint64(p.Orbit), 8, linewriter.Hex|linewriter.WithZero)
-	line.AppendString(p.Type.String(), 12, linewriter.AlignRight)
-	line.AppendUint(uint64(p.Len), 8, linewriter.AlignRight)
-
-	os.Stdout.Write(append(line.Bytes(), '\n'))
 }
