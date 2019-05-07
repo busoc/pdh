@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"github.com/busoc/pdh"
 	"github.com/busoc/rt"
@@ -103,10 +104,12 @@ func runList(cmd *cli.Command, args []string) error {
 type key struct {
 	Origin byte
 	Code   [pdh.UMICodeLen]byte
+	time.Time
 }
 
 func runCount(cmd *cli.Command, args []string) error {
 	csv := cmd.Flag.Bool("c", false, "csv format")
+	interval := cmd.Flag.Duration("i", 0, "interval")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
@@ -117,34 +120,10 @@ func runCount(cmd *cli.Command, args []string) error {
 	defer mr.Close()
 	d := pdh.NewDecoder(rt.NewReader(mr))
 
-	stats := make(map[key]rt.Coze)
-	for {
-		p, err := d.Decode(false)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-		k := key{
-			Origin: p.Code[0],
-			Code:   p.Code,
-		}
-		cz := stats[k]
-		cz.Count++
-		cz.Size += uint64(p.Len)
-
-		cz.EndTime = p.Timestamp()
-		if cz.StartTime.IsZero() {
-			cz.StartTime = cz.EndTime
-		}
-
-		stats[k] = cz
-	}
 	line := Line(*csv)
-	for k, cz := range stats {
-		line.AppendUint(uint64(k.Origin), 2, linewriter.Hex|linewriter.WithZero)
-		line.AppendBytes(k.Code[:], 12, linewriter.Hex)
+	for cz := range countPackets(d, *interval) {
+		line.AppendUint(uint64(cz.origin.Origin), 2, linewriter.Hex|linewriter.WithZero)
+		line.AppendBytes(cz.origin.Code[:], 12, linewriter.Hex)
 		line.AppendUint(cz.Count, 8, linewriter.AlignRight)
 		if *csv {
 			line.AppendUint(cz.Size, 8, linewriter.AlignRight)
@@ -197,4 +176,65 @@ func runDiff(cmd *cli.Command, args []string) error {
 		stats[p.Code] = p
 	}
 	return nil
+}
+
+func byKey(p pdh.Packet, d time.Duration) key {
+	k := key{
+		Origin: p.Code[0],
+		Code:   p.Code,
+	}
+	if d > 0 {
+		k.Time = p.Timestamp().Truncate(d)
+	}
+	return k
+}
+
+type coze struct {
+	rt.Coze
+	origin key
+}
+
+func countPackets(d *pdh.Decoder, i time.Duration) <-chan coze {
+	q := make(chan coze)
+	go func() {
+		defer close(q)
+
+		stats := make(map[key]rt.Coze)
+		keys := make(map[key]time.Time)
+		for {
+			p, err := d.Decode(false)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return
+			}
+			k := byKey(p, i)
+
+			cz, ok := stats[k]
+			if !ok {
+				tmp := byKey(p, 0)
+				tmp.Time = keys[tmp]
+				if !tmp.Time.IsZero() {
+					q <- coze{Coze: stats[tmp], origin: tmp}
+					delete(stats, tmp)
+
+					tmp.Time = time.Time{}
+				}
+				keys[tmp] = k.Time
+			}
+
+			cz.Count++
+			cz.Size += uint64(p.Len)
+			cz.EndTime = p.Timestamp()
+			if cz.StartTime.IsZero() {
+				cz.StartTime = cz.EndTime
+			}
+			stats[k] = cz
+		}
+		for k, cz := range stats {
+			q <- coze{Coze: cz, origin: k}
+		}
+	}()
+	return q
 }
