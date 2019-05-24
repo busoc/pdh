@@ -10,7 +10,10 @@ import (
 	"github.com/busoc/timutil"
 )
 
-var ErrEmpty = errors.New("empty")
+var (
+	ErrEmpty   = errors.New("empty")
+	ErrMissing = errors.New("no bytes left in buffer")
+)
 
 const (
 	UMICodeLen   = 6
@@ -32,7 +35,7 @@ func WithCodes(vs [][]byte) func(h UMIHeader) (bool, error) {
 
 func WithOrigin(o byte) func(h UMIHeader) (bool, error) {
 	return func(u UMIHeader) (bool, error) {
-		return o == u.Code[0], nil
+		return (o == 0 || o == u.Code[0]), nil
 	}
 }
 
@@ -88,7 +91,11 @@ func decodePacket(buffer []byte, data bool) (p Packet, err error) {
 			err = io.ErrShortBuffer
 			return
 		}
-		copy(p.Data, buffer[UMIHeaderLen:])
+		p.Data = make([]byte, int(p.Len))
+		if n := copy(p.Data, buffer[UMIHeaderLen:]); n < len(p.Data) {
+			err = ErrMissing
+			return
+		}
 	}
 	return
 }
@@ -169,7 +176,7 @@ func (p Packet) Marshal() ([]byte, error) {
 	if len(p.Data) == 0 {
 		return nil, ErrEmpty
 	}
-	buf := make([]byte, UMIHeaderLen-4+int(p.Len))
+	buf := make([]byte, UMIHeaderLen+int(p.Len))
 	offset := copy(buf, encodeHeader(p.UMIHeader))
 	copy(buf[offset:], p.Data)
 	return buf, nil
@@ -190,6 +197,22 @@ type UMIHeader struct {
 func (u UMIHeader) Timestamp() time.Time {
 	return timutil.Join5(u.Coarse, u.Fine)
 }
+
+// func encodeHeader(u UMIHeader) []byte {
+// 	buf := make([]byte, UMIHeaderLen)
+//
+// 	binary.LittleEndian.PutUint32(buf[0:], u.Size)
+// 	buf[4] = byte(u.State)
+// 	binary.BigEndian.PutUint32(buf[5:], u.Orbit)
+// 	copy(buf[9:], u.Code[:])
+// 	buf[15] = byte(u.Type)
+// 	binary.BigEndian.PutUint16(buf[16:], u.Unit)
+// 	binary.BigEndian.PutUint32(buf[18:], u.Coarse)
+// 	buf[22] = byte(u.Fine)
+// 	binary.BigEndian.PutUint16(buf[23:], u.Len)
+//
+// 	return buf
+// }
 
 func encodeHeader(u UMIHeader) []byte {
 	buf := make([]byte, UMIHeaderLen-4)

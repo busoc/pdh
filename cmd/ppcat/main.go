@@ -30,7 +30,7 @@ var commands = []*cli.Command{
 		Run:   runCount,
 	},
 	{
-		Usage: "take <file...>",
+		Usage: "take <file> <file...>",
 		Short: "",
 		Run:   runTake,
 	},
@@ -56,7 +56,7 @@ func main() {
 		}
 	}()
 	log.SetFlags(0)
-	if err := cli.Run(commands, cli.Usage("prx", helpText, commands), nil); err != nil {
+	if err := cli.Run(commands, cli.Usage("ppcat", helpText, commands), nil); err != nil {
 		log.Fatalln(err)
 	}
 }
@@ -252,7 +252,7 @@ func runTake(cmd *cli.Command, args []string) error {
 	}
 	dirs := make([]string, cmd.Flag.NArg()-1)
 	for i := 1; i < cmd.Flag.NArg(); i++ {
-		dirs[i] = cmd.Flag.Arg(i)
+		dirs[i-1] = cmd.Flag.Arg(i)
 	}
 	mr, err := rt.Browse(dirs, true)
 	if err != nil {
@@ -260,9 +260,13 @@ func runTake(cmd *cli.Command, args []string) error {
 	}
 	defer mr.Close()
 
-	o, err := strconv.ParseUint(*origin, 16, 8)
-	if err != nil {
-		return err
+	var o byte
+	if *origin != "" {
+		x, err := strconv.ParseUint(*origin, 16, 8)
+		if err != nil {
+			return err
+		}
+		o = byte(x)
 	}
 	wc, err := os.Create(cmd.Flag.Arg(0))
 	if err != nil {
