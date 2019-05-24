@@ -1,12 +1,16 @@
 package pdh
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"time"
 
 	"github.com/busoc/timutil"
 )
+
+var ErrEmpty = errors.New("empty")
 
 const (
 	UMICodeLen   = 6
@@ -15,29 +19,59 @@ const (
 
 const BufferSize = 4096
 
-type Packet struct {
-	UMIHeader
-	Data []byte
+func WithCodes(vs [][]byte) func(h UMIHeader) (bool, error) {
+	return func(u UMIHeader) (bool, error) {
+		for _, v := range vs {
+			if bytes.Equal(v, u.Code[:]) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}
+
+func WithOrigin(o byte) func(h UMIHeader) (bool, error) {
+	return func(u UMIHeader) (bool, error) {
+		return o == u.Code[0], nil
+	}
 }
 
 type Decoder struct {
+	filter func(h UMIHeader) (bool, error)
 	inner  io.Reader
 	buffer []byte
 }
 
-func NewDecoder(r io.Reader) *Decoder {
+func NewDecoder(r io.Reader, filter func(UMIHeader) (bool, error)) *Decoder {
+	if filter == nil {
+		filter = func(_ UMIHeader) (bool, error) {
+			return true, nil
+		}
+	}
 	return &Decoder{
+		filter: filter,
 		inner:  r,
 		buffer: make([]byte, BufferSize),
 	}
 }
 
 func (d *Decoder) Decode(data bool) (p Packet, err error) {
-	n, err := d.inner.Read(d.buffer)
+	var (
+		keep bool
+		n    int
+	)
+	n, err = d.inner.Read(d.buffer)
 	if err != nil {
 		return
 	}
-	return decodePacket(d.buffer[:n], data)
+	p, err = decodePacket(d.buffer[:n], data)
+	if err != nil {
+		return
+	}
+	if keep, err = d.filter(p.UMIHeader); !keep {
+		return d.Decode(data)
+	}
+	return
 }
 
 func decodePacket(buffer []byte, data bool) (p Packet, err error) {
@@ -126,6 +160,21 @@ func (u UMIValueType) String() string {
 	}
 }
 
+type Packet struct {
+	UMIHeader
+	Data []byte
+}
+
+func (p Packet) Marshal() ([]byte, error) {
+	if len(p.Data) == 0 {
+		return nil, ErrEmpty
+	}
+	buf := make([]byte, UMIHeaderLen-4+int(p.Len))
+	offset := copy(buf, encodeHeader(p.UMIHeader))
+	copy(buf[offset:], p.Data)
+	return buf, nil
+}
+
 type UMIHeader struct {
 	Size   uint32
 	Code   [UMICodeLen]byte
@@ -140,6 +189,21 @@ type UMIHeader struct {
 
 func (u UMIHeader) Timestamp() time.Time {
 	return timutil.Join5(u.Coarse, u.Fine)
+}
+
+func encodeHeader(u UMIHeader) []byte {
+	buf := make([]byte, UMIHeaderLen-4)
+
+	buf[0] = byte(u.State)
+	binary.BigEndian.PutUint32(buf[1:], u.Orbit)
+	copy(buf[5:], u.Code[:])
+	buf[11] = byte(u.Type)
+	binary.BigEndian.PutUint16(buf[12:], u.Unit)
+	binary.BigEndian.PutUint32(buf[14:], u.Coarse)
+	buf[18] = byte(u.Fine)
+	binary.BigEndian.PutUint16(buf[19:], u.Len)
+
+	return buf
 }
 
 func decodeHeader(body []byte) (UMIHeader, error) {

@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/busoc/pdh"
@@ -27,6 +28,11 @@ var commands = []*cli.Command{
 		Usage: "count [-g] <file...>",
 		Short: "",
 		Run:   runCount,
+	},
+	{
+		Usage: "take <file...>",
+		Short: "",
+		Run:   runTake,
 	},
 }
 
@@ -78,7 +84,7 @@ func runList(cmd *cli.Command, args []string) error {
 		return err
 	}
 	defer mr.Close()
-	d := pdh.NewDecoder(rt.NewReader(mr))
+	d := pdh.NewDecoder(rt.NewReader(mr), nil)
 
 	line := Line(*csv)
 	for {
@@ -118,7 +124,7 @@ func runCount(cmd *cli.Command, args []string) error {
 		return err
 	}
 	defer mr.Close()
-	d := pdh.NewDecoder(rt.NewReader(mr))
+	d := pdh.NewDecoder(rt.NewReader(mr), nil)
 
 	line := Line(*csv)
 	for cz := range countPackets(d, *interval) {
@@ -149,7 +155,7 @@ func runDiff(cmd *cli.Command, args []string) error {
 		return err
 	}
 	defer mr.Close()
-	d := pdh.NewDecoder(rt.NewReader(mr))
+	d := pdh.NewDecoder(rt.NewReader(mr), nil)
 
 	line := Line(*csv)
 
@@ -237,4 +243,46 @@ func countPackets(d *pdh.Decoder, i time.Duration) <-chan coze {
 		}
 	}()
 	return q
+}
+
+func runTake(cmd *cli.Command, args []string) error {
+	origin := cmd.Flag.String("p", "", "origin")
+	if err := cmd.Flag.Parse(args); err != nil {
+		return err
+	}
+	dirs := make([]string, cmd.Flag.NArg()-1)
+	for i := 1; i < cmd.Flag.NArg(); i++ {
+		dirs[i] = cmd.Flag.Arg(i)
+	}
+	mr, err := rt.Browse(dirs, true)
+	if err != nil {
+		return err
+	}
+	defer mr.Close()
+
+	o, err := strconv.ParseUint(*origin, 16, 8)
+	if err != nil {
+		return err
+	}
+	wc, err := os.Create(cmd.Flag.Arg(0))
+	if err != nil {
+		return err
+	}
+	defer wc.Close()
+
+	d := pdh.NewDecoder(rt.NewReader(mr), pdh.WithOrigin(byte(o)))
+	for {
+		switch p, err := d.Decode(true); err {
+		case nil:
+			if buf, err := p.Marshal(); err == nil {
+				if _, err := wc.Write(buf); err != nil {
+					return err
+				}
+			}
+		case io.EOF:
+			return nil
+		default:
+			return err
+		}
+	}
 }
