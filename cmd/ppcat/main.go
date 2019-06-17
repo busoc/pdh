@@ -75,6 +75,7 @@ func Line(csv bool) *linewriter.Writer {
 }
 
 func runList(cmd *cli.Command, args []string) error {
+	quiet := cmd.Flag.Bool("q", false, "quiet")
 	csv := cmd.Flag.Bool("c", false, "csv format")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
@@ -87,18 +88,28 @@ func runList(cmd *cli.Command, args []string) error {
 	d := pdh.NewDecoder(rt.NewReader(mr), nil)
 
 	line := Line(*csv)
+	var z rt.Coze
 	for {
 		switch p, err := d.Decode(false); err {
 		case nil:
-			line.AppendTime(p.Timestamp(), rt.TimeFormat, linewriter.AlignCenter)
-			line.AppendString(p.State.String(), 8, linewriter.AlignRight)
-			line.AppendBytes(p.Code[:], 0, linewriter.Hex)
-			line.AppendUint(uint64(p.Orbit), 8, linewriter.Hex|linewriter.WithZero)
-			line.AppendString(p.Type.String(), 12, linewriter.AlignRight)
-			line.AppendUint(uint64(p.Len), 8, linewriter.AlignRight)
+			if !*quiet {
+				line.AppendTime(p.Timestamp(), rt.TimeFormat, linewriter.AlignCenter)
+				line.AppendString(p.State.String(), 8, linewriter.AlignRight)
+				line.AppendBytes(p.Code[:], 0, linewriter.Hex)
+				line.AppendUint(uint64(p.Orbit), 8, linewriter.Hex|linewriter.WithZero)
+				line.AppendString(p.Type.String(), 12, linewriter.AlignRight)
+				line.AppendUint(uint64(p.Len), 8, linewriter.AlignRight)
 
-			io.Copy(os.Stdout, line)
+				io.Copy(os.Stdout, line)
+			}
+			z.EndTime = p.Timestamp()
+			if z.StartTime.IsZero() {
+				z.StartTime = z.EndTime
+			}
+			z.Size += uint64(p.Len)
+			z.Count++
 		case io.EOF:
+			fmt.Printf("%d packets (%d)\n", z.Count, z.Size>>20)
 			return nil
 		default:
 			return err
