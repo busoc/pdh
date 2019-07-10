@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -25,6 +26,9 @@ const BufferSize = 4096
 func WithCodes(vs [][]byte) func(h UMIHeader) (bool, error) {
 	return func(u UMIHeader) (bool, error) {
 		for _, v := range vs {
+			if len(v) != UMICodeLen {
+				return false, fmt.Errorf("%x: invalid code", v)
+			}
 			if bytes.Equal(v, u.Code[:]) {
 				return true, nil
 			}
