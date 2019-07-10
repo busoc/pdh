@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/busoc/pdh"
@@ -31,7 +33,7 @@ var commands = []*cli.Command{
 		Run:   runCount,
 	},
 	{
-		Usage: "take <file> <file...>",
+		Usage: "take [-c] <file> <file...>",
 		Short: "",
 		Run:   runTake,
 	},
@@ -258,7 +260,8 @@ func countPackets(d *pdh.Decoder, i time.Duration) <-chan coze {
 }
 
 func runTake(cmd *cli.Command, args []string) error {
-	origin := cmd.Flag.String("p", "", "origin")
+	var list catalog
+	cmd.Flag.Var(&list, "c", "codes")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
@@ -272,21 +275,13 @@ func runTake(cmd *cli.Command, args []string) error {
 	}
 	defer mr.Close()
 
-	var o byte
-	if *origin != "" {
-		x, err := strconv.ParseUint(*origin, 16, 8)
-		if err != nil {
-			return err
-		}
-		o = byte(x)
-	}
 	wc, err := os.Create(cmd.Flag.Arg(0))
 	if err != nil {
 		return err
 	}
 	defer wc.Close()
 
-	d := pdh.NewDecoder(rt.NewReader(mr), pdh.WithOrigin(byte(o)))
+	d := pdh.NewDecoder(rt.NewReader(mr), pdh.WithCodes(list.Codes()))
 	for {
 		switch p, err := d.Decode(true); err {
 		case nil:
@@ -301,4 +296,54 @@ func runTake(cmd *cli.Command, args []string) error {
 			return err
 		}
 	}
+}
+
+type catalog [][]byte
+
+func (c *catalog) Set(v string) error {
+
+	var rs io.Reader
+	if f, e := os.Open(v); e == nil {
+		defer f.Close()
+		rs = f
+	} else {
+		rs = strings.NewReader(v)
+	}
+
+	var (
+		err   error
+		codes = *c
+		scan  = bufio.NewScanner(rs)
+	)
+	for lino := 1; scan.Scan() && err == nil; lino++ {
+		c := scan.Text()
+		if len(c) == 0 {
+			continue
+		}
+		if xs, e := decodeCode(c); e == nil {
+			codes = append(codes, xs)
+		} else {
+			err = fmt.Errorf("%d: %s", lino, e)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	*c = codes
+	return scan.Err()
+}
+
+func (c *catalog) String() string {
+	return "catalog"
+}
+
+func (c *catalog) Codes() [][]byte {
+	return [][]byte(*c)
+}
+
+func decodeCode(v string) ([]byte, error) {
+	if len(v) != 12 {
+		return nil, fmt.Errorf("%s: invalid code length (should have 12 characters)", v)
+	}
+	return hex.DecodeString(v)
 }
