@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ var commands = []*cli.Command{
 		Run:   runCount,
 	},
 	{
-		Usage: "take [-c] <file> <file...>",
+		Usage: "take [-d interval] [-c catalog] [-n name] <pattern> <file...>",
 		Short: "",
 		Run:   runTake,
 	},
@@ -261,10 +262,14 @@ func countPackets(d *pdh.Decoder, i time.Duration) <-chan coze {
 
 func runTake(cmd *cli.Command, args []string) error {
 	var list catalog
-	cmd.Flag.Var(&list, "c", "codes")
+	cmd.Flag.Var(&list, "c", "catalog")
+	name := cmd.Flag.String("n", "", "name")
+	interval := cmd.Flag.Duration("d", rt.Five, "interval")
+
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
 	}
+
 	dirs := make([]string, cmd.Flag.NArg()-1)
 	for i := 1; i < cmd.Flag.NArg(); i++ {
 		dirs[i-1] = cmd.Flag.Arg(i)
@@ -275,36 +280,27 @@ func runTake(cmd *cli.Command, args []string) error {
 	}
 	defer mr.Close()
 
-	wc, err := os.Create(cmd.Flag.Arg(0))
+	d := pdh.NewDecoder(rt.NewReader(mr), pdh.WithCodes(list.Codes()))
+	sort, err := rt.Sort(d, cmd.Flag.Arg(0), *interval)
 	if err != nil {
 		return err
+	} else {
+		sort.UPI = *name
 	}
-	defer wc.Close()
-
-	d := pdh.NewDecoder(rt.NewReader(mr), pdh.WithCodes(list.Codes()))
-	for {
-		switch p, err := d.Decode(true); err {
-		case nil:
-			if buf, err := p.Marshal(); err == nil {
-				if _, err := wc.Write(buf); err != nil {
-					return err
-				}
-			}
-		case io.EOF:
-			return nil
-		default:
-			return err
-		}
-	}
+	return sort.Sort()
 }
 
-type catalog [][]byte
+type catalog struct{
+	codes [][]byte
+	file  string
+}
 
 func (c *catalog) Set(v string) error {
 
 	var rs io.Reader
 	if f, e := os.Open(v); e == nil {
 		defer f.Close()
+		c.file = v
 		rs = f
 	} else {
 		rs = strings.NewReader(v)
@@ -312,16 +308,15 @@ func (c *catalog) Set(v string) error {
 
 	var (
 		err   error
-		codes = *c
 		scan  = bufio.NewScanner(rs)
 	)
 	for lino := 1; scan.Scan() && err == nil; lino++ {
-		c := scan.Text()
-		if len(c) == 0 {
+		code := scan.Text()
+		if len(code) == 0 {
 			continue
 		}
-		if xs, e := decodeCode(c); e == nil {
-			codes = append(codes, xs)
+		if xs, e := decodeCode(code); e == nil {
+			c.codes = append(c.codes, xs)
 		} else {
 			err = fmt.Errorf("%d: %s", lino, e)
 		}
@@ -329,16 +324,19 @@ func (c *catalog) Set(v string) error {
 	if err != nil {
 		return err
 	}
-	*c = codes
 	return scan.Err()
 }
 
 func (c *catalog) String() string {
-	return "catalog"
+	str := strings.TrimSuffix(filepath.Base(c.file), filepath.Ext(c.file))
+	if str == "" {
+		str = "catalog"
+	}
+	return str
 }
 
 func (c *catalog) Codes() [][]byte {
-	return [][]byte(*c)
+	return c.codes
 }
 
 func decodeCode(v string) ([]byte, error) {

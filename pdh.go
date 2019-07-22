@@ -3,6 +3,7 @@ package pdh
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ const (
 
 const BufferSize = 4096
 
-func WithCodes(vs [][]byte) func(h UMIHeader) (bool, error) {
+func WithCodes(vs [][]byte) func(UMIHeader) (bool, error) {
 	return func(u UMIHeader) (bool, error) {
 		for _, v := range vs {
 			if len(v) != UMICodeLen {
@@ -37,7 +38,23 @@ func WithCodes(vs [][]byte) func(h UMIHeader) (bool, error) {
 	}
 }
 
-func WithOrigin(o byte) func(h UMIHeader) (bool, error) {
+func WithCode(str string) (func(UMIHeader) (bool, error), error) {
+	if len(str) != 12 {
+		return nil, fmt.Errorf("invalid code length")
+	}
+	v, err := hex.DecodeString(str)
+	if err != nil {
+		return nil, err
+	}
+	return func(u UMIHeader) (bool, error) {
+		if len(v) != UMICodeLen {
+			return false, fmt.Errorf("%x: invalid code", v)
+		}
+		return bytes.Equal(v, u.Code[:]), nil
+	}, nil
+}
+
+func WithOrigin(o byte) func(UMIHeader) (bool, error) {
 	return func(u UMIHeader) (bool, error) {
 		return (o == 0 || o == u.Code[0]), nil
 	}
@@ -79,6 +96,15 @@ func (d *Decoder) Decode(data bool) (p Packet, err error) {
 		return d.Decode(data)
 	}
 	return
+}
+
+func (d *Decoder) Marshal() ([]byte, time.Time, error) {
+	p, err := d.Decode(true)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	buf, err := p.Marshal()
+	return buf, p.Timestamp(), err
 }
 
 func decodePacket(buffer []byte, data bool) (p Packet, err error) {
