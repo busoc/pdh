@@ -80,6 +80,7 @@ func Line(csv bool) *linewriter.Writer {
 
 func runList(cmd *cli.Command, args []string) error {
 	quiet := cmd.Flag.Bool("q", false, "quiet")
+	hrdp := cmd.Flag.Bool("a", false, "hrdp")
 	csv := cmd.Flag.Bool("c", false, "csv format")
 	if err := cmd.Flag.Parse(args); err != nil {
 		return err
@@ -90,6 +91,11 @@ func runList(cmd *cli.Command, args []string) error {
 	}
 	defer mr.Close()
 	d := pdh.NewDecoder(rt.NewReader(mr), nil)
+
+	var base uint16
+	if *hrdp {
+		base = pdh.UMIHeaderLen
+	}
 
 	line := Line(*csv)
 	var z rt.Coze
@@ -102,7 +108,7 @@ func runList(cmd *cli.Command, args []string) error {
 				line.AppendBytes(p.Code[:], 0, linewriter.Hex)
 				line.AppendUint(uint64(p.Orbit), 8, linewriter.Hex|linewriter.WithZero)
 				line.AppendString(p.Type.String(), 12, linewriter.AlignRight)
-				line.AppendUint(uint64(p.Len), 8, linewriter.AlignRight)
+				line.AppendUint(uint64(p.Len+base), 8, linewriter.AlignRight)
 
 				io.Copy(os.Stdout, line)
 			}
@@ -113,7 +119,7 @@ func runList(cmd *cli.Command, args []string) error {
 			z.Size += uint64(p.Len)
 			z.Count++
 		case io.EOF:
-			fmt.Printf("%d packets (%d)\n", z.Count, z.Size>>20)
+			// fmt.Printf("%d packets (%d)\n", z.Count, z.Size>>20)
 			return nil
 		default:
 			return err
