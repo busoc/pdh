@@ -296,7 +296,7 @@ func runTake(cmd *cli.Command, args []string) error {
 	return sort.Sort()
 }
 
-type catalog struct{
+type catalog struct {
 	codes [][]byte
 	file  string
 }
@@ -313,8 +313,8 @@ func (c *catalog) Set(v string) error {
 	}
 
 	var (
-		err   error
-		scan  = bufio.NewScanner(rs)
+		err  error
+		scan = bufio.NewScanner(rs)
 	)
 	for lino := 1; scan.Scan() && err == nil; lino++ {
 		code := scan.Text()
